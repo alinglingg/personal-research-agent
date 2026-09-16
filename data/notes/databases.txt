@@ -1,0 +1,7 @@
+SQLite is a lightweight relational database stored in a single file.
+
+SQLite does not require a separate database server.
+
+PostgreSQL is a client-server relational database commonly used for larger applications.
+
+Databases can provide persistent storage for AI agent memory, task history, and application state.

@@ -1,0 +1,9 @@
+AI agents are software systems that use models to decide what actions to take toward a goal.
+
+Tools allow an AI agent to interact with external systems such as APIs, databases, files, and search engines.
+
+Agent state contains information needed during the current task.
+
+Agent memory stores information that may persist across different tasks or sessions.
+
+An agent loop repeatedly observes the current state, decides what to do, performs an action, and updates the state.

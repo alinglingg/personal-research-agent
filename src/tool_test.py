@@ -1,5 +1,7 @@
-from tools import calculate
+from tools import search_notes
 
-result = calculate(25, 17, "multiply")
 
-print(result)
+results = search_notes("memory")
+
+for result in results:
+    print(result)
