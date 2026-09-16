@@ -2,10 +2,11 @@ import json
 
 from llm import ask_llm
 from tools import calculate, search_notes
+from memory import search_memory
 
 
 state = {
-    "goal": "What does my notes say about agent memory?",
+    "goal": "What do I previously know about SQLite?",
     "step": 0,
     "observations": [],
     "tool_history": [],
@@ -45,6 +46,12 @@ Use when the user asks about information that may exist in their local notes.
 Arguments:
 - query: a short keyword or phrase to search for
 
+3. search_memory
+Use when the user asks about information that may have been saved from previous sessions.
+
+Arguments:
+- query: a short keyword or phrase to search persistent memory
+
 Previous observations:
 {observations_text}
 
@@ -75,6 +82,13 @@ Final answer example:
     "answer": "your final answer"
 }}
 
+Memory search example:
+{{
+    "action": "search_memory",
+    "query": "SQLite"
+}}
+
+
 Return ONLY valid JSON.
 """
 
@@ -93,6 +107,25 @@ Return ONLY valid JSON.
 
         tool_record = {
             "tool": "search_notes",
+            "query": decision["query"],
+            "result": results
+        }
+
+        state["tool_history"].append(tool_record)
+
+        continue
+
+    if decision["action"] == "search_memory":
+        results = search_memory(decision["query"])
+
+        observation = "\n".join(
+            [f"{row[0]}: {row[1]}" for row in results]
+        )
+
+        state["observations"].append(observation)
+
+        tool_record = {
+            "tool": "search_memory",
             "query": decision["query"],
             "result": results
         }
