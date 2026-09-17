@@ -1,1 +1,1 @@
-This is a test research summary.
+Agent state contains information needed during the current task [agents.txt], while agent memory stores information that may persist across different tasks or sessions [agents.txt].
