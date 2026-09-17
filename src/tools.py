@@ -32,3 +32,9 @@ def search_notes(query):
                 )
 
     return matches
+
+def save_summary(text):
+    with open("data/research_summary.txt", "w") as file:
+        file.write(text)
+
+    return "Summary saved."
