@@ -1,34 +1,57 @@
 # Personal Research Agent
 
-A local-first research agent using Python 3.12, LangGraph, Ollama (Qwen3 8B), SQLite, and FastAPI. It searches local text notes, retrieves saved memories, and performs arithmetic. Evidence, sources, and tool history remain in graph state; repeated calls with the same arguments are prevented.
+A local-first AI research agent that can search local notes, retrieve saved memories, perform calculations, and answer using evidence from its tools.
 
-## Architecture
+Built with Python, LangGraph, Ollama (Qwen3 8B), SQLite, and FastAPI, the project demonstrates tool routing, persistent memory, grounded answers, deterministic guardrails, observability, automated evaluation, latency optimization, and a lightweight web interface.
 
-```text
-Client → FastAPI → LangGraph decision node
-                       ├── search_notes ──┐
-                       ├── search_memory ┤ → decision node → final answer
-                       └── calculate ────┘
-```
+## What it does
 
-The existing tools, SQLite storage, graph nodes, and successful API response shape are preserved. A deterministic decision guard recognizes explicit recall requests (previously saved/remembered information or earlier sessions) and requires a memory search before any other action can finalize the run. It preserves a model-selected memory query, or extracts a search subject from the request when overriding another action. A completed empty search satisfies the prerequisite; general questions about memory architecture do not trigger it. There is no frontend, embedding service, or web search.
+The agent decides which tool to use based on the user's request:
 
-## Setup and run
+- **Notes Search** — retrieves information from local text files
+- **Memory Search** — retrieves information stored in SQLite across sessions
+- **Calculator** — performs deterministic arithmetic
+- **Grounded Answering** — answers using retrieved tool evidence instead of relying only on the language model
 
-Run commands from the repository root so relative data paths resolve correctly:
+Example questions:
+
+- “What do my notes say about agent memory?”
+- “What do I previously know about SQLite?”
+- “What is 25 multiplied by 17?”
+
+The project is designed as a small but extensible foundation for internal knowledge assistants, project research tools, and business systems that need to retrieve information before answering.
+
+---
+
+## Demo
+
+Start the API:
 
 ```bash
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-ollama pull qwen3:8b
-# Start Ollama separately with `ollama serve` if it is not already running.
-mkdir -p data/notes
-PYTHONPATH=src python -c 'from memory import init_db; init_db()'
-uvicorn api:app --app-dir src
+uvicorn api:app --app-dir src --reload
 ```
 
-Place `.txt` notes in `data/notes/`. Memories are stored in `data/memory.db`.
+Then open the web interface:
+
+```text
+http://127.0.0.1:8000/app
+```
+
+The browser interface shows:
+
+- final answer
+- tool used
+- source
+- step count
+- expandable technical execution details
+
+You can also use the FastAPI Swagger interface:
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+Example API request:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/research \
@@ -36,118 +59,478 @@ curl -X POST http://127.0.0.1:8000/research \
   -d '{"goal":"What is 25 multiplied by 17?"}'
 ```
 
-Successful responses contain `goal`, `answer`, `sources`, `steps`, and `tool_history`.
+Successful responses contain:
+
+- `goal`
+- `answer`
+- `sources`
+- `steps`
+- `tool_history`
+
+---
+
+## Architecture
+
+```text
+Client / Web UI
+      ↓
+    FastAPI
+      ↓
+LangGraph decision node
+      ├── search_notes ─────┐
+      ├── search_memory ────┤
+      └── calculate ────────┘
+                ↓
+      Evidence + Tool History
+                ↓
+         Final Answer
+```
+
+The graph keeps evidence, sources, tool history, and execution state across each run.
+
+A deterministic routing guard recognizes explicit recall requests involving previously saved, remembered, or earlier-session information and requires a memory search before the run can finalize.
+
+Repeated tool calls with the same arguments are prevented.
+
+A lightweight frontend is included for interactive demos. The current version does not include embeddings or web search.
+
+---
+
+## Tech Stack
+
+- Python 3.12
+- LangGraph
+- Ollama
+- Qwen3 8B
+- FastAPI
+- SQLite
+- Pytest
+- GitHub Actions
+- HTML / CSS / JavaScript frontend
+
+---
+
+## Validation
+
+Current project validation:
+
+- **137 pytest tests passing**
+- **5/5 offline evaluations passing**
+- **5/5 live Ollama evaluations passing**
+- **9/9 latency benchmark checks passing**
+- duplicate tool calls prevented
+- fabricated sources rejected
+- deterministic routing guardrails validated
+
+One upstream Starlette / AnyIO deprecation warning remains in the test environment. It originates from a dependency rather than application code.
+
+---
+
+## Setup and Run
+
+Run commands from the repository root so relative paths resolve correctly.
+
+### Create a virtual environment
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+```
+
+### Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### Install the Ollama model
+
+```bash
+ollama pull qwen3:8b
+```
+
+Start Ollama separately if it is not already running:
+
+```bash
+ollama serve
+```
+
+### Initialize local storage
+
+```bash
+mkdir -p data/notes
+PYTHONPATH=src python -c 'from memory import init_db; init_db()'
+```
+
+Place `.txt` note files inside:
+
+```text
+data/notes/
+```
+
+Persistent memories are stored locally in:
+
+```text
+data/memory.db
+```
+
+### Start the API
+
+```bash
+uvicorn api:app --app-dir src --reload
+```
+
+Open the web demo:
+
+```text
+http://127.0.0.1:8000/app
+```
+
+---
 
 ## Testing
+
+Run the full test suite:
 
 ```bash
 pytest -v
 ```
 
-Tests run offline: model responses are scripted and unexpected network requests fail. The original calculator test retains its assertions with a deterministic model fixture. Search tests use temporary notes and SQLite databases; existing tests remain in place.
+Tests run offline by default.
 
-Coverage includes note and memory routing, empty results, all calculator operations, duplicate calls, invalid JSON and argument shapes, invalid Ollama response envelopes, connection/HTTP failures, timeouts, graph limits, API errors, and structured logs. `httpx` supports FastAPI's test client.
+Model responses are scripted during automated tests, and unexpected network access is rejected.
+
+Search and memory tests use temporary files and temporary SQLite databases so personal local data is not modified.
+
+Test coverage includes:
+
+- note routing
+- memory routing
+- empty search results
+- calculator operations
+- duplicate tool-call prevention
+- deterministic recall routing
+- malformed model JSON
+- invalid action schemas
+- invalid Ollama response envelopes
+- connection failures
+- HTTP failures
+- request timeouts
+- graph recursion limits
+- API error responses
+- structured logging
+- direct-answer latency paths
+
+---
 
 ## Evaluations
 
+Run offline evaluations:
+
 ```bash
-python evaluations/run.py          # offline graph and evaluator regression checks
-python evaluations/run.py --live   # evaluate the configured Ollama model
+python evaluations/run.py
 ```
 
-Five fixed prompts in `evaluations/cases.json` exercise calculator, notes, memory, and empty searches. Both modes use real tools against temporary synthetic notes and a temporary SQLite database, leaving personal data untouched. Run the suite as a standalone process because fixture setup temporarily changes its working directory.
+Run live evaluations against the configured Ollama model:
 
-Each case checks routing, an evidence-grounded answer, source names, duplicate calls, and completion. Results are JSON lines on stdout and include selected tools, tool history, evidence, the final answer, and pass/fail reasons; any failed check or run returns a nonzero exit status. Offline mode includes a repeated scripted action; safe direct-answer paths may finish before consuming it. Dedicated pytest cases exercise duplicate guards on synthesis paths. It validates graph behavior and evaluator checks, **not model routing quality**. Live mode uses Ollama to test actual model decisions and answers.
+```bash
+python evaluations/run.py --live
+```
 
-Answer checks use a bounded, case-specific semantic grammar: positive answers must state the expected fact and cite the fixture source; empty answers must state that no matches were found. Spacing, punctuation, and supported paraphrases are accepted. Full-answer matching rejects contradictions and added claims. Evidence must match both the fixture and actual tool results; empty cases require a search for the requested subject with an empty result. Source checks compare returned source sets and reject unexpected filename citations and URLs. These small fixtures are regression checks, not a general proof that arbitrary answers are factual. Tests also inject wrong answers, invented sources, wrong routing, and duplicate calls to verify the evaluator detects failures.
+The evaluation suite includes five fixed cases covering:
+
+- calculator routing
+- notes search
+- memory retrieval
+- empty notes search
+- empty memory search
+
+Each case checks:
+
+- correct routing
+- grounded answers
+- expected sources
+- evidence consistency
+- duplicate tool calls
+- completion behavior
+- fabricated source rejection
+
+Offline evaluations use scripted model behavior and temporary fixtures.
+
+Live mode tests the actual Ollama model's routing and answer behavior.
+
+The evaluator accepts supported paraphrases while rejecting contradictions, unsupported claims, wrong routing, duplicate calls, and fabricated sources.
+
+These evaluations are regression checks for known cases and are not intended as proof that every arbitrary model response is factual.
+
+---
 
 ## Observability
 
-The `personal_research_agent` Python logger emits one JSON object per event to stderr:
+The `personal_research_agent` logger emits structured JSON events to stderr.
 
-- `run_started`: a run has begun.
-- `decision`: the model selected a tool or final answer.
-- `phase_finished`: per-call `duration_ms` for `decision_llm`, `synthesis_llm`, or `tool` (including failures).
-- `run_finished`: completion or failure, including a stable error code and accumulated `timings` (`decision_llm_ms`, `synthesis_llm_ms`, `tool_ms`, `llm_calls`).
-- `request_finished`: API method/path, HTTP status, and total server request latency to response creation, including validation and failed requests.
+Events include:
 
-Agent-run events include `run_id`, `goal`, `selected_tool`, `step_count`, `latency_ms`, `status`, and `error`. Decision events also include `action`. Step count is the number of completed decision nodes, matching the API's existing `steps` semantics; latency is elapsed time since the run started. A failure while deciding keeps the last completed count. `selected_tool` is null at startup and for a final decision.
+- `run_started`
+- `decision`
+- `phase_finished`
+- `run_finished`
+- `request_finished`
+
+Tracked information includes:
+
+- `run_id`
+- goal
+- selected tool
+- step count
+- latency
+- completion status
+- error code
+- decision LLM time
+- synthesis LLM time
+- tool execution time
+- number of LLM calls
 
 Example completion event:
 
 ```json
-{"event":"run_finished","run_id":"example-id","goal":"1 + 2","selected_tool":null,"step_count":2,"latency_ms":153.4,"status":"completed","error":null}
+{
+  "event": "run_finished",
+  "run_id": "example-id",
+  "goal": "1 + 2",
+  "selected_tool": null,
+  "step_count": 2,
+  "latency_ms": 153.4,
+  "status": "completed",
+  "error": null
+}
 ```
 
-Logs include the user goal, which may be sensitive; restrict access and retention accordingly. Full model prompts, responses, evidence, and exception messages are not logged. Applications can configure the named logger to integrate with their own handlers.
+Full model prompts, model responses, evidence contents, and internal exception messages are not written to logs.
 
-## Error handling
+The user goal is logged and may contain sensitive information, so production deployments should apply appropriate retention and access controls.
 
-Ollama requests use a 5-second connection timeout and a 120-second read timeout. These bound network waits, not the total run duration. There are no automatic retries. The graph retains its recursion limit of 12 graph steps.
+---
 
-Invalid JSON, missing fields, unsupported actions/operations, non-finite calculator operands, and division by zero are rejected before tool execution. Errors use this response shape:
+## Error Handling
+
+Ollama requests use:
+
+- 5-second connection timeout
+- 120-second read timeout
+
+There are currently no automatic retries.
+
+The graph uses a recursion limit of 12 steps.
+
+The application validates and rejects:
+
+- invalid model JSON
+- missing action fields
+- unsupported actions
+- invalid calculator operations
+- non-finite operands
+- division by zero
+- malformed Ollama responses
+
+API errors use a structured response format:
 
 ```json
-{"detail":{"code":"llm_unavailable","message":"Ollama is unavailable. Please try again later."}}
+{
+  "detail": {
+    "code": "llm_unavailable",
+    "message": "Ollama is unavailable. Please try again later."
+  }
+}
 ```
 
-| HTTP status | Code | Meaning |
+| HTTP Status | Code | Meaning |
 | --- | --- | --- |
 | 503 | `llm_unavailable` | Ollama connection or HTTP failure |
 | 504 | `llm_timeout` | Ollama request timed out |
-| 502 | `invalid_llm_response` | Invalid model JSON, response envelope, action, or answer |
+| 502 | `invalid_llm_response` | Invalid model JSON, action, or response |
 | 504 | `agent_limit_reached` | Graph step limit reached |
 | 500 | `agent_failed` | Unexpected agent or tool failure |
 
-Failure responses omit internal exception details. FastAPI continues to return its normal 422 response for invalid request bodies.
+FastAPI continues to use its normal `422` response for invalid request bodies.
 
-## CI
+---
 
-`.github/workflows/tests.yml` runs on every push and pull request. It installs requirements on Python 3.12, runs `pytest -v`, and runs the offline evaluation suite. CI requires no Ollama server or model downloads. Live model evaluations are an explicit local check.
+## Latency Optimizations
 
-## Project structure
+The project includes optimized execution paths that reduce unnecessary model calls while preserving the LangGraph architecture.
+
+After a tool runs, the system can finalize without another LLM call when the result is deterministic and sufficiently clear.
+
+### Calculator shortcut
+
+For a single explicit arithmetic request:
 
 ```text
-src/             # API, graph, model client, tools, memory, errors, logging
-tests/          # offline pytest suite
-evaluations/    # fixed cases and offline/live runner
-data/notes/     # local text notes
-.github/workflows/tests.yml
+What is 25 multiplied by 17?
 ```
 
-## Latency optimizations
+the agent still routes through the calculator tool, but once the tool returns `425`, another synthesis call is not required.
 
-The graph still routes through the same decision and tool nodes. After a tool runs,
-its existing decision node can finalize without another model call when:
+### Single-fact lookup shortcut
 
-- A request is a single explicit arithmetic operation, the executed operands and
-  operation match it, and no explanation or additional task was requested.
-- A single note or memory result is a short declarative fact with the exact
-  requested subject. The answer quotes the result verbatim with its real source.
+For a clear notes or memory lookup that returns one short declarative fact, the system can return that grounded fact directly with its source.
 
-Ambiguous requests, multiple results, explanations, extra tasks, and empty searches
-retain model reasoning. The mandatory memory search guard runs before shortcuts. Complete single-operation arithmetic requests also require a calculator call with the parsed operands; the model cannot bypass the tool with an unsupported final answer.
-Steps still count decision-node executions, so a one-tool answer retains two steps
-while using one model call. API response fields remain unchanged.
+Requests that are ambiguous, contain multiple results, require explanation, or involve empty searches continue through the normal model synthesis path.
 
-Agent calls use temperature 0 for reproducible routing while retaining the same model reasoning and response validation; generic `ask_llm` callers keep their defaults. Strict single-fact lookup requests use the parsed subject as the query so filenames and output instructions cannot contaminate the search.
+The mandatory recall-routing guard runs before these shortcuts.
 
-Router prompts keep tool schemas and grounding/routing rules but remove duplicate
-copies of tool results and source lists. A model call that produces a final answer
-after tool execution is measured as `synthesis_llm`, including when that call also
-chooses the final action. Duplicate-call fallback synthesis is measured separately.
-Timing context is isolated per concurrent run. Phase durations exclude graph overhead;
-`run_finished.latency_ms` measures the whole agent run, and `request_finished` includes
-the API wrapper and response preparation (not network transit to the browser).
+API response fields remain unchanged.
 
-For reproducible local measurements with real Ollama:
+---
+
+## Benchmarking
+
+Run the latency benchmark against the live Ollama model:
 
 ```bash
 python evaluations/benchmark.py --repeats 3
 ```
 
-This runs calculator, notes, and memory cases serially against temporary fixtures.
-JSON reports include tool/evidence/answer checks, model call counts, first routing
-call, subsequent model calls, tool time, and total agent latency. Errors remain in the
-report and cause a nonzero exit code. Compare medians and report failures separately;
-model latency varies with generation and local machine load.
+The benchmark covers:
+
+- calculator
+- notes lookup
+- memory lookup
+
+Reports include:
+
+- answer checks
+- evidence checks
+- model call count
+- routing latency
+- synthesis latency
+- tool time
+- total agent latency
+
+Current benchmark validation:
+
+- **9/9 checks passing**
+
+Observed optimizations reduced latency substantially on common request types, with the largest improvements coming from eliminating unnecessary second model calls.
+
+Because Ollama runs locally, latency varies based on machine load and generation speed.
+
+---
+
+## CI
+
+GitHub Actions runs on every push and pull request.
+
+The workflow:
+
+- uses Python 3.12
+- installs project requirements
+- runs `pytest -v`
+- runs the offline evaluation suite
+
+CI does not require Ollama or model downloads.
+
+Live model evaluations remain an explicit local validation step.
+
+Workflow file:
+
+```text
+.github/workflows/tests.yml
+```
+
+---
+
+## Project Structure
+
+```text
+personal-research-agent/
+├── src/
+│   ├── api.py
+│   ├── langgraph_agent.py
+│   ├── llm.py
+│   ├── memory.py
+│   ├── tools.py
+│   ├── direct_answers.py
+│   └── ...
+├── frontend/
+│   └── index.html
+├── tests/
+│   └── ...
+├── evaluations/
+│   ├── run.py
+│   ├── benchmark.py
+│   └── cases.json
+├── data/
+│   └── notes/
+├── examples/
+│   └── ...
+├── .github/
+│   └── workflows/
+│       └── tests.yml
+├── pytest.ini
+├── requirements.txt
+└── README.md
+```
+
+---
+
+## What I Learned
+
+This project was built as a hands-on introduction to agentic AI architecture.
+
+It demonstrates:
+
+- LLM tool selection
+- LangGraph orchestration
+- temporary agent state
+- persistent SQLite memory
+- evidence-grounded responses
+- deterministic routing guardrails
+- duplicate-call prevention
+- API design
+- structured error handling
+- observability
+- automated testing
+- offline and live evaluation
+- latency profiling and optimization
+- lightweight frontend integration
+
+The project evolved from a simple local LLM script into a tested, observable, API-accessible agent system.
+
+---
+
+## Business Use Cases
+
+The same architecture can be adapted into an internal business assistant.
+
+Possible use cases include:
+
+- searching company SOPs
+- retrieving project documentation
+- looking up client notes
+- answering internal policy questions
+- retrieving previously recorded decisions
+- performing pricing or operational calculations
+- supporting customer service teams
+- creating an internal knowledge assistant
+
+Instead of answering only from the language model's built-in knowledge, the agent retrieves relevant information from connected tools before producing its response.
+
+---
+
+## Future Improvements
+
+Possible next steps include:
+
+- semantic search with embeddings
+- web research tools
+- conversation and session memory
+- human-in-the-loop approvals
+- additional business data connectors
+- Docker deployment
+- richer frontend UX
+- authentication and multi-user sessions
+- production database support
+- distributed tracing
+- hosted deployment
