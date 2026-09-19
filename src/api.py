@@ -1,10 +1,14 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from research_agent import run_research_agent
+from langgraph_agent import run_langgraph_agent
 
 
-app = FastAPI()
+app = FastAPI(
+    title="Personal Research Agent API",
+    description="API for a local LangGraph-powered research agent.",
+    version="1.0.0"
+)
 
 
 class ResearchRequest(BaseModel):
@@ -20,12 +24,12 @@ def home():
 
 @app.post("/research")
 def research(request: ResearchRequest):
-    result = run_research_agent(request.goal)
+    result = run_langgraph_agent(request.goal)
 
     return {
         "goal": result["goal"],
         "answer": result["final_answer"],
         "sources": result["sources"],
         "steps": result["step"],
-        "evaluation": result["evaluation"]
+        "tool_history": result["tool_history"]
     }
