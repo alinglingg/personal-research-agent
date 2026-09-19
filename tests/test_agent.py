@@ -6,7 +6,11 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 from langgraph_agent import run_langgraph_agent
 
 
-def test_agent_calculator_route():
+def test_agent_calculator_route(scripted_llm):
+    scripted_llm(
+        {"action": "calculate", "a": 25, "b": 17, "operation": "multiply"},
+        {"action": "final", "answer": "425"},
+    )
     result = run_langgraph_agent(
         "What is 25 multiplied by 17?"
     )

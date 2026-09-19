@@ -1,0 +1,42 @@
+[
+  {
+    "name": "calculator",
+    "goal": "What is 25 multiplied by 17? Reply with only the number.",
+    "call": {"action": "calculate", "a": 25, "b": 17, "operation": "multiply"},
+    "answer": "425",
+    "sources": [],
+    "evidence": ["Calculator result: 425"]
+  },
+  {
+    "name": "notes",
+    "goal": "Search my local notes for the launch code. Reply exactly with the matching sentence followed by (project.txt).",
+    "call": {"action": "search_notes", "query": "launch code"},
+    "answer": "The launch code is cedar-42. (project.txt)",
+    "sources": ["project.txt"],
+    "evidence": ["The launch code is cedar-42."]
+  },
+  {
+    "name": "memory",
+    "goal": "What backup color did I previously save in memory? Reply exactly with the saved sentence followed by (memory.db).",
+    "call": {"action": "search_memory", "query": "backup color"},
+    "answer": "My backup color is amber. (memory.db)",
+    "sources": ["memory.db"],
+    "evidence": ["My backup color is amber."]
+  },
+  {
+    "name": "empty_notes",
+    "goal": "Search my local notes for zirconium. If nothing matches, reply exactly: No matching evidence found.",
+    "call": {"action": "search_notes", "query": "zirconium"},
+    "answer": "No matching evidence found.",
+    "sources": [],
+    "evidence": []
+  },
+  {
+    "name": "empty_memory",
+    "goal": "Search previously saved memory for zirconium. If nothing matches, reply exactly: No matching evidence found.",
+    "call": {"action": "search_memory", "query": "zirconium"},
+    "answer": "No matching evidence found.",
+    "sources": [],
+    "evidence": []
+  }
+]

@@ -1,8 +1,16 @@
 import json
+import math
+import re
+from time import perf_counter
+from uuid import uuid4
 from typing import TypedDict
 
 from langgraph.graph import StateGraph, START, END
 
+from langgraph.errors import GraphRecursionError
+
+from errors import AgentError, AgentLimitError, InvalidLLMResponseError
+from observability import log_event
 from llm import ask_llm
 from tools import calculate, search_notes
 from memory import search_memory
@@ -20,6 +28,58 @@ class AgentState(TypedDict):
     number_a: float | None
     number_b: float | None
     operation: str | None
+
+def parse_response(response, *, decision=False):
+    """Reject malformed JSON and tool arguments before they reach graph nodes."""
+    try:
+        value = json.loads(response)
+    except (ValueError, TypeError) as error:
+        raise InvalidLLMResponseError("Ollama returned invalid JSON.") from error
+    valid = isinstance(value, dict)
+    action = value.get("action") if valid and decision else "final"
+    if valid and action in ("search_notes", "search_memory"):
+        valid = isinstance(value.get("query"), str) and bool(value["query"].strip())
+    elif valid and action == "calculate":
+        try:
+            valid = all(
+                type(value.get(key)) in (int, float) and math.isfinite(value[key])
+                for key in ("a", "b")
+            ) and value.get("operation") in ("add", "subtract", "multiply", "divide")
+        except OverflowError:
+            valid = False
+        if valid and value["operation"] == "divide" and value["b"] == 0:
+            valid = False
+    elif valid and action == "final":
+        valid = isinstance(value.get("answer"), str) and bool(value["answer"].strip())
+    else:
+        valid = False
+    if not valid:
+        raise InvalidLLMResponseError("Ollama returned an invalid action or answer.")
+    return value
+
+
+def required_memory_query(state):
+    """Recognize explicit recall requests, not general questions about memory."""
+    if any(record["tool"] == "search_memory" for record in state["tool_history"]):
+        return None
+    goal = re.split(r"[?.!]", state["goal"], maxsplit=1)[0].strip()
+    recall = re.search(
+        r"\b(?:previously|earlier|already)\s+(?:(?:was|were|been)\s+)?"
+        r"(?:save[ds]?|remember(?:ed)?|known|learn(?:ed|t))\b"
+        r"|\b(?:I|we|you)\s+(?:(?:had|have)\s+)?(?:save[ds]?|remember(?:ed)?|learn(?:ed|t)|knew)\b"
+        r"|\b(?:last|earlier|previous)\s+(?:session|conversation)\b"
+        r"|\b(?:saved|remembered)\s+(?:memory|memories|information)\b"
+        r"|\b(?:search|check|look up)\s+(?:my\s+)?(?:saved\s+)?(?:memory|memories)\b",
+        goal, re.IGNORECASE,
+    )
+    if not recall:
+        return None
+    # Keep explicit search subjects short enough for the existing SQLite LIKE tool.
+    subject = re.search(r"\b(?:for|about)\s+(.+)$", goal, re.IGNORECASE)
+    if not subject:
+        subject = re.search(r"^what\s+(.+?)\s+(?:did|had|have|was|were)\b", goal, re.IGNORECASE)
+    return (subject.group(1) if subject else goal).strip(" \"'")
+
 
 def make_final_answer(state: AgentState):
     evidence_text = json.dumps(state["evidence"], indent=2)
@@ -46,7 +106,7 @@ Return ONLY valid JSON:
 """
 
     response = ask_llm(prompt)
-    result = json.loads(response)
+    result = parse_response(response)
 
     return {
         "step": state["step"] + 1,
@@ -135,7 +195,12 @@ Return ONLY valid JSON.
 """
 
     response = ask_llm(prompt)
-    decision = json.loads(response)
+    decision = parse_response(response, decision=True)
+    memory_query = required_memory_query(state)
+    if memory_query is not None and decision["action"] != "search_memory":
+        # Enforce the prerequisite before all actions, including duplicate-call
+        # fallback finalization. The existing graph still executes the tool.
+        decision = {"action": "search_memory", "query": memory_query}
 
     # -------------------------
     # SEARCH NOTES
@@ -382,10 +447,46 @@ def run_langgraph_agent(goal):
         "operation": None
     }
 
-    return app.invoke(
-        initial_state,
-        config={"recursion_limit": 12}
-    )
+    run_id = str(uuid4())
+    started = perf_counter()
+    state = dict(initial_state)
+    selected_tool = None
+    status = "failed"
+    error_code = None
+
+    def emit(event, **extra):
+        log_event(
+            event, run_id=run_id, goal=goal, selected_tool=selected_tool,
+            step_count=state["step"],
+            latency_ms=round((perf_counter() - started) * 1000, 2),
+            **extra,
+        )
+
+    emit("run_started", status="running", error=None)
+    try:
+        for update in app.stream(initial_state, config={"recursion_limit": 12}, stream_mode="updates"):
+            for node, values in update.items():
+                state.update(values)
+                if node == "decide":
+                    action = values.get("next_action")
+                    selected_tool = action if action in ("search_notes", "search_memory", "calculate") else None
+                    emit("decision", status="running", error=None, action=action)
+        if not state["final_answer"]:
+            raise AgentError("The agent did not produce an answer.")
+        status = "completed"
+        return state
+    except GraphRecursionError as error:
+        error_code = AgentLimitError.code
+        raise AgentLimitError("The agent reached its step limit. Try a narrower goal.") from error
+    except AgentError as error:
+        error_code = error.code
+        raise
+    except Exception as error:
+        error_code = AgentError.code
+        raise AgentError("The research run failed. Please try again.") from error
+    finally:
+        emit("run_finished", status=status, error=error_code)
+
 
 if __name__ == "__main__":
     result = run_langgraph_agent(
