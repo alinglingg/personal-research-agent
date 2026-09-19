@@ -6,8 +6,10 @@ url = "http://localhost:11434/api/generate"
 REQUEST_TIMEOUT = (5, 120)  # connect and read timeouts, in seconds
 
 
-def ask_llm(prompt):
+def ask_llm(prompt, *, options=None):
     data = {"model": "qwen3:8b", "prompt": prompt, "stream": False}
+    if options is not None:
+        data["options"] = options
     try:
         response = requests.post(url, json=data, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()

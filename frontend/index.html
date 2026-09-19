@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Personal Research Agent</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; background: #f5f7fa; color: #202b3c; margin: 0; padding: 40px 16px; }
+    main { max-width: 800px; margin: auto; background: white; padding: clamp(20px, 5vw, 32px); border-radius: 12px; box-shadow: 0 4px 20px #00000014; }
+    h1 { margin-top: 0; font-size: 1.8rem; }
+    h2 { font-size: 1.15rem; }
+    label { display: block; font-weight: 600; margin-bottom: 8px; }
+    textarea { width: 100%; min-height: 110px; padding: 12px; font: inherit; resize: vertical; border: 1px solid #738096; border-radius: 6px; }
+    button { margin-top: 12px; padding: 12px 20px; font: inherit; font-weight: 600; cursor: pointer; border: 0; border-radius: 6px; background: #234bb8; color: white; }
+    button:disabled { background: #59677d; cursor: wait; }
+    :focus-visible { outline: 3px solid #bd6200; outline-offset: 3px; }
+    #status { min-height: 1.5em; }
+    #error { padding: 16px; color: #831d27; background: #fff0f1; border-radius: 6px; overflow-wrap: anywhere; }
+    .result { margin-top: 24px; padding: 20px; background: #f1f3f5; border-radius: 8px; overflow-wrap: anywhere; }
+    #answer, #goal { white-space: pre-wrap; }
+    #steps, #tool-labels { color: #435169; }
+    li { margin: 6px 0; }
+    details { margin-top: 24px; border-top: 1px solid #c9cfd8; padding-top: 16px; }
+    summary { cursor: pointer; font-weight: 600; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .85rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Personal Research Agent</h1>
+    <p>Ask the agent about its notes, saved memory, or a calculation.</p>
+    <form id="research-form">
+      <label for="question">Your question</label>
+      <textarea id="question" required placeholder="Example: What do I previously know about SQLite?"></textarea>
+      <button id="ask" type="submit">Ask Agent</button>
+    </form>
+    <p id="status" role="status" aria-live="polite" aria-atomic="true"></p>
+    <p id="error" role="alert" hidden></p>
+    <section id="result" class="result" aria-label="Research result" hidden>
+      <h2>Question</h2>
+      <p id="goal"></p>
+      <h2>Answer</h2>
+      <p id="answer"></p>
+      <p id="steps"></p>
+      <p id="tool-labels"></p>
+      <h2>Sources</h2>
+      <p id="no-sources" hidden>No sources used.</p>
+      <ul id="sources"></ul>
+      <details id="technical-details">
+        <summary>Technical details</summary>
+        <h2>Raw tool history</h2>
+        <pre id="tools"></pre>
+      </details>
+    </section>
+  </main>
+  <script>
+    const byId = id => document.getElementById(id);
+    const toolLabels = { search_memory: "Memory Search", search_notes: "Notes Search", calculate: "Calculator" };
+    const errorMessages = {
+      llm_unavailable: "Cannot reach Ollama. Check that Ollama is running and the configured model is installed, then try again.",
+      llm_timeout: "Ollama took too long to respond. Please try again.",
+      invalid_llm_response: "Ollama returned a response the agent could not use. Please try again.",
+      agent_limit_reached: "The agent could not finish within its research limit. Try a more specific question.",
+      agent_failed: "The agent could not complete your research. Please try again."
+    };
+    let pending = false;
+    function apiError(response, data) {
+      const detail = data && data.detail;
+      const code = detail && typeof detail.code === "string" ? detail.code : "";
+      const message = typeof detail === "string" ? detail :
+        detail && typeof detail.message === "string" ? detail.message : "";
+      const friendly = errorMessages[code] || (response.status === 422
+        ? "Please check your question and try again."
+        : `The research service could not complete the request (HTTP ${response.status}). Please try again.`);
+      return friendly + (message ? ` ${message}` : "") + (code ? ` (${code})` : "");
+    }
+    async function askAgent(event) {
+      if (event) event.preventDefault();
+      if (pending) return;
+      const question = byId("question").value.trim();
+      if (!question) {
+        byId("error").textContent = "Please enter a question.";
+        byId("error").hidden = false;
+        byId("question").focus();
+        return;
+      }
+      pending = true;
+      byId("ask").disabled = true;
+      byId("research-form").setAttribute("aria-busy", "true");
+      byId("status").textContent = "Agent is thinking…";
+      byId("error").hidden = true;
+      byId("result").hidden = true;
+      try {
+        let response;
+        try {
+          response = await fetch("/research", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ goal: question })
+          });
+        } catch {
+          throw new Error("Cannot connect to the research service. Check your connection and that the API is running, then try again.");
+        }
+        let data;
+        try { data = await response.json(); } catch {
+          if (!response.ok) throw new Error(apiError(response, null));
+          throw new Error("The research service returned an unreadable response. Please try again.");
+        }
+        if (!response.ok) throw new Error(apiError(response, data));
+        if (!data || typeof data.goal !== "string" || typeof data.answer !== "string" ||
+            !Array.isArray(data.sources) || !Array.isArray(data.tool_history) ||
+            !Number.isInteger(data.steps) || data.steps < 0) {
+          throw new Error("The research service returned an incomplete response. Please try again.");
+        }
+        byId("goal").textContent = data.goal;
+        byId("answer").textContent = data.answer;
+        byId("steps").textContent = `${data.steps} ${data.steps === 1 ? "step" : "steps"}`;
+        const labels = [...new Set(data.tool_history.map(entry => toolLabels[entry?.tool] || "Other tool"))];
+        byId("tool-labels").textContent = labels.length ? `Tools used: ${labels.join(" · ")}` : "No tools used.";
+        byId("sources").replaceChildren();
+        for (const source of data.sources) {
+          const item = document.createElement("li");
+          item.textContent = typeof source === "string" ? source : JSON.stringify(source);
+          byId("sources").appendChild(item);
+        }
+        byId("no-sources").hidden = data.sources.length > 0;
+        byId("sources").hidden = data.sources.length === 0;
+        byId("tools").textContent = JSON.stringify(data.tool_history, null, 2);
+        byId("technical-details").open = false;
+        byId("result").hidden = false;
+        byId("status").textContent = "Research complete.";
+      } catch (error) {
+        byId("status").textContent = "";
+        byId("error").textContent = error.message || "Something went wrong. Please try again.";
+        byId("error").hidden = false;
+      } finally {
+        pending = false;
+        byId("ask").disabled = false;
+        byId("research-form").setAttribute("aria-busy", "false");
+      }
+    }
+    byId("research-form").addEventListener("submit", askAgent);
+  </script>
+</body>
+</html>

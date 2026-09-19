@@ -1,6 +1,7 @@
 import json
 import math
 import re
+from functools import partial
 from time import perf_counter
 from uuid import uuid4
 from typing import TypedDict
@@ -10,10 +11,15 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.errors import GraphRecursionError
 
 from errors import AgentError, AgentLimitError, InvalidLLMResponseError
-from observability import log_event
-from llm import ask_llm
+from observability import log_event, measure_phase, active_run
+from direct_answers import direct_answer, calculation_request, lookup_subject
+from llm import ask_llm as generate_response
 from tools import calculate, search_notes
 from memory import search_memory
+
+
+# Reproducible agent decisions; generic example scripts keep their defaults.
+ask_llm = partial(generate_response, options={"temperature": 0})
 
 
 class AgentState(TypedDict):
@@ -105,8 +111,9 @@ Return ONLY valid JSON:
 }}
 """
 
-    response = ask_llm(prompt)
-    result = parse_response(response)
+    with measure_phase("synthesis_llm"):
+        response = ask_llm(prompt)
+        result = parse_response(response)
 
     return {
         "step": state["step"] + 1,
@@ -115,10 +122,16 @@ Return ONLY valid JSON:
     }
 
 def decide(state: AgentState):
-    evidence_text = json.dumps(state["evidence"], indent=2)
-    sources_text = "\n".join(state["sources"])
-    tool_history_text = json.dumps(state["tool_history"], indent=2)
+    # Finalize on the existing decision node, retaining step-count semantics and
+    # the mandatory memory-search prerequisite before taking any shortcut.
+    if required_memory_query(state) is None:
+        answer = direct_answer(state)
+        if answer is not None:
+            return {"step": state["step"] + 1, "next_action": "final", "final_answer": answer}
 
+    # Tool results appear only in evidence, not again in history and sources.
+    history = [{k: v for k, v in record.items() if k != "result"}
+               for record in state["tool_history"]]
     prompt = f"""
 You are a research agent.
 
@@ -146,20 +159,18 @@ Arguments:
 - operation: add, subtract, multiply, divide
 
 Evidence gathered:
-{evidence_text}
-
-Sources gathered:
-{sources_text}
+{json.dumps(state["evidence"])}
 
 Tool history:
-{tool_history_text}
+{json.dumps(history)}
 
 Rules:
 - If relevant evidence already exists, prefer producing a final answer.
 - Do not repeat a successful tool call with the same arguments.
 - Use search_memory for previously remembered or saved information.
 - Use search_notes for information in local notes.
-- Use calculate for arithmetic.
+- Always use calculate for arithmetic; never answer from mental arithmetic.
+- Search queries must contain only the subject, not filenames or formatting instructions.
 - Base final answers only on gathered evidence.
 - Never invent source filenames.
 
@@ -194,13 +205,26 @@ Final:
 Return ONLY valid JSON.
 """
 
-    response = ask_llm(prompt)
-    decision = parse_response(response, decision=True)
+    with measure_phase("decision_llm") as measurement:
+        response = ask_llm(prompt)
+        decision = parse_response(response, decision=True)
+        if state["tool_history"] and decision["action"] == "final":
+            measurement["phase"] = "synthesis_llm"
     memory_query = required_memory_query(state)
     if memory_query is not None and decision["action"] != "search_memory":
         # Enforce the prerequisite before all actions, including duplicate-call
         # fallback finalization. The existing graph still executes the tool.
         decision = {"action": "search_memory", "query": memory_query}
+    elif not state["tool_history"] and (calculation := calculation_request(state["goal"])):
+        # A shortened prompt must never permit an ungrounded arithmetic answer.
+        # Reuse argument validation for zero division and out-of-range operands.
+        decision = parse_response(json.dumps(calculation), decision=True)
+    elif not state["tool_history"]:
+        for tool in ("search_memory", "search_notes"):
+            subject = lookup_subject(state["goal"], tool)
+            if subject:
+                decision = {"action": tool, "query": subject}
+                break
 
     # -------------------------
     # SEARCH NOTES
@@ -292,7 +316,8 @@ Return ONLY valid JSON.
 
 
 def search_notes_node(state: AgentState):
-    results = search_notes(state["tool_query"])
+    with measure_phase("tool", tool="search_notes"):
+        results = search_notes(state["tool_query"])
 
     evidence = list(state["evidence"])
     sources = list(state["sources"])
@@ -325,7 +350,8 @@ def search_notes_node(state: AgentState):
 
 
 def search_memory_node(state: AgentState):
-    results = search_memory(state["tool_query"])
+    with measure_phase("tool", tool="search_memory"):
+        results = search_memory(state["tool_query"])
 
     evidence = list(state["evidence"])
     sources = list(state["sources"])
@@ -358,11 +384,10 @@ def search_memory_node(state: AgentState):
 
 
 def calculate_node(state: AgentState):
-    result = calculate(
-        state["number_a"],
-        state["number_b"],
-        state["operation"]
-    )
+    with measure_phase("tool", tool="calculate"):
+        result = calculate(
+            state["number_a"], state["number_b"], state["operation"]
+        )
 
     evidence = list(state["evidence"])
     tool_history = list(state["tool_history"])
@@ -462,6 +487,8 @@ def run_langgraph_agent(goal):
             **extra,
         )
 
+    metrics = {"decision_llm_ms": 0.0, "synthesis_llm_ms": 0.0, "tool_ms": 0.0, "llm_calls": 0}
+    timing_token = active_run.set((emit, metrics))
     emit("run_started", status="running", error=None)
     try:
         for update in app.stream(initial_state, config={"recursion_limit": 12}, stream_mode="updates"):
@@ -485,7 +512,9 @@ def run_langgraph_agent(goal):
         error_code = AgentError.code
         raise AgentError("The research run failed. Please try again.") from error
     finally:
-        emit("run_finished", status=status, error=error_code)
+        active_run.reset(timing_token)
+        emit("run_finished", status=status, error=error_code,
+             timings={key: round(value, 2) for key, value in metrics.items()})
 
 
 if __name__ == "__main__":

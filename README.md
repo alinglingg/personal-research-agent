@@ -57,7 +57,7 @@ python evaluations/run.py --live   # evaluate the configured Ollama model
 
 Five fixed prompts in `evaluations/cases.json` exercise calculator, notes, memory, and empty searches. Both modes use real tools against temporary synthetic notes and a temporary SQLite database, leaving personal data untouched. Run the suite as a standalone process because fixture setup temporarily changes its working directory.
 
-Each case checks routing, an evidence-grounded answer, source names, duplicate calls, and completion. Results are JSON lines on stdout and include selected tools, tool history, evidence, the final answer, and pass/fail reasons; any failed check or run returns a nonzero exit status. Offline mode deliberately repeats a scripted action to test the duplicate guard. It validates graph behavior and evaluator checks, **not model routing quality**. Live mode uses Ollama to test actual model decisions and answers.
+Each case checks routing, an evidence-grounded answer, source names, duplicate calls, and completion. Results are JSON lines on stdout and include selected tools, tool history, evidence, the final answer, and pass/fail reasons; any failed check or run returns a nonzero exit status. Offline mode includes a repeated scripted action; safe direct-answer paths may finish before consuming it. Dedicated pytest cases exercise duplicate guards on synthesis paths. It validates graph behavior and evaluator checks, **not model routing quality**. Live mode uses Ollama to test actual model decisions and answers.
 
 Answer checks use a bounded, case-specific semantic grammar: positive answers must state the expected fact and cite the fixture source; empty answers must state that no matches were found. Spacing, punctuation, and supported paraphrases are accepted. Full-answer matching rejects contradictions and added claims. Evidence must match both the fixture and actual tool results; empty cases require a search for the requested subject with an empty result. Source checks compare returned source sets and reject unexpected filename citations and URLs. These small fixtures are regression checks, not a general proof that arbitrary answers are factual. Tests also inject wrong answers, invented sources, wrong routing, and duplicate calls to verify the evaluator detects failures.
 
@@ -67,9 +67,11 @@ The `personal_research_agent` Python logger emits one JSON object per event to s
 
 - `run_started`: a run has begun.
 - `decision`: the model selected a tool or final answer.
-- `run_finished`: completion or failure, including a stable error code.
+- `phase_finished`: per-call `duration_ms` for `decision_llm`, `synthesis_llm`, or `tool` (including failures).
+- `run_finished`: completion or failure, including a stable error code and accumulated `timings` (`decision_llm_ms`, `synthesis_llm_ms`, `tool_ms`, `llm_calls`).
+- `request_finished`: API method/path, HTTP status, and total server request latency to response creation, including validation and failed requests.
 
-All events include `run_id`, `goal`, `selected_tool`, `step_count`, `latency_ms`, `status`, and `error`. Decision events also include `action`. Step count is the number of completed decision nodes, matching the API's existing `steps` semantics; latency is elapsed time since the run started. A failure while deciding keeps the last completed count. `selected_tool` is null at startup and for a final decision.
+Agent-run events include `run_id`, `goal`, `selected_tool`, `step_count`, `latency_ms`, `status`, and `error`. Decision events also include `action`. Step count is the number of completed decision nodes, matching the API's existing `steps` semantics; latency is elapsed time since the run started. A failure while deciding keeps the last completed count. `selected_tool` is null at startup and for a final decision.
 
 Example completion event:
 
@@ -112,3 +114,40 @@ evaluations/    # fixed cases and offline/live runner
 data/notes/     # local text notes
 .github/workflows/tests.yml
 ```
+
+## Latency optimizations
+
+The graph still routes through the same decision and tool nodes. After a tool runs,
+its existing decision node can finalize without another model call when:
+
+- A request is a single explicit arithmetic operation, the executed operands and
+  operation match it, and no explanation or additional task was requested.
+- A single note or memory result is a short declarative fact with the exact
+  requested subject. The answer quotes the result verbatim with its real source.
+
+Ambiguous requests, multiple results, explanations, extra tasks, and empty searches
+retain model reasoning. The mandatory memory search guard runs before shortcuts. Complete single-operation arithmetic requests also require a calculator call with the parsed operands; the model cannot bypass the tool with an unsupported final answer.
+Steps still count decision-node executions, so a one-tool answer retains two steps
+while using one model call. API response fields remain unchanged.
+
+Agent calls use temperature 0 for reproducible routing while retaining the same model reasoning and response validation; generic `ask_llm` callers keep their defaults. Strict single-fact lookup requests use the parsed subject as the query so filenames and output instructions cannot contaminate the search.
+
+Router prompts keep tool schemas and grounding/routing rules but remove duplicate
+copies of tool results and source lists. A model call that produces a final answer
+after tool execution is measured as `synthesis_llm`, including when that call also
+chooses the final action. Duplicate-call fallback synthesis is measured separately.
+Timing context is isolated per concurrent run. Phase durations exclude graph overhead;
+`run_finished.latency_ms` measures the whole agent run, and `request_finished` includes
+the API wrapper and response preparation (not network transit to the browser).
+
+For reproducible local measurements with real Ollama:
+
+```bash
+python evaluations/benchmark.py --repeats 3
+```
+
+This runs calculator, notes, and memory cases serially against temporary fixtures.
+JSON reports include tool/evidence/answer checks, model call counts, first routing
+call, subsequent model calls, tool time, and total agent latency. Errors remain in the
+report and cause a nonzero exit code. Compare medians and report failures separately;
+model latency varies with generation and local machine load.
